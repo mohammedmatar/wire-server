@@ -42,4 +42,5 @@ library
       , transformers         >= 0.3
       , tinylog              >= 0.7
       , wreq                 >= 0.2
+      , uuid
 

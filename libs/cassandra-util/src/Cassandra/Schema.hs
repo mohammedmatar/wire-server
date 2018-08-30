@@ -34,10 +34,11 @@ import Data.Text (Text, pack, intercalate)
 import Data.Text.Lazy (fromStrict)
 import Data.Text.Lazy.Builder (fromText, fromString, toLazyText)
 import Data.Time.Clock
+import Data.UUID (UUID)
 import Data.Word
 import Database.CQL.IO
 import Database.CQL.Protocol (Request (..), Query (..), Response(..), Result (..))
-import GHC.Generics hiding (to, from, S)
+import GHC.Generics hiding (to, from, S, R)
 import Options.Applicative hiding (info)
 import Prelude hiding (log)
 import System.Logger (Logger, Level (..), log, msg)
@@ -90,14 +91,10 @@ schema' :: LT.Text -> Client ()
 schema' q = void $ schema (QueryString q) (params All ())
 
 schemaVersion :: Client (Maybe Int32)
-schemaVersion = catch (fmap runIdentity <$> qry) h
+schemaVersion = catch (fmap runIdentity <$> qry) (errorMsg "version" "meta")
   where
     qry = retry x5 $ query1 q (params One ())
     q = QueryString "select version from meta where id=1 order by version desc limit 1"
-
-    h :: SomeException -> a
-    h e = error $ "Failed to read schema version from meta table. Error was: "
-                <> show e
 
 versionCheck :: Int32 -> Client ()
 versionCheck v = do
@@ -166,6 +163,8 @@ migrateSchema l o ms = do
             migAction
             now <- liftIO getCurrentTime
             write metaInsert (params All (migVersion, migText, now))
+            info "waiting for schema version consistency across peers..."
+            waitForSchemaConsistency
   where
     newer v = dropWhile (maybe (const False) (>=) v . migVersion)
             . sortBy (\x y -> migVersion x `compare` migVersion y)
@@ -181,6 +180,28 @@ migrateSchema l o ms = do
 
     metaInsert :: QueryString W (Int32, Text, UTCTime) ()
     metaInsert = "insert into meta (id, version, descr, date) values (1,?,?,?)"
+
+waitForSchemaConsistency :: Client ()
+waitForSchemaConsistency = do
+    -- select schema_version from system.local from all nodes
+    _v <- systemSchemaVersion
+    undefined
+    -- TODO
+    -- compare and wait until they are the same or timeout
+    -- catch
+    -- (errorMsg "schema_version" "system.local")
+
+systemSchemaVersion :: Client (Maybe UUID)
+systemSchemaVersion = fmap runIdentity <$> qry
+  where
+    qry = retry x1 (query1 cql (params All ()))
+
+    cql :: PrepQuery R () (Identity UUID)
+    cql = "select schema_version from system.local"
+
+errorMsg :: String -> String -> SomeException -> a
+errorMsg s1 s2 e = error $ "Failed to read " <> s1 <> " from " <> s2
+                         <> " table. Error was: " <> show e
 
 migrationPolicy :: IO Policy
 migrationPolicy = do
