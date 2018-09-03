@@ -242,6 +242,7 @@ errorMsg :: String -> String -> SomeException -> a
 errorMsg s1 s2 e = error $ "Failed to read " <> s1 <> " from " <> s2
                          <> " table. Error was: " <> show e
 
+-- TODO: document why this special policy is used
 migrationPolicy :: IO Policy
 migrationPolicy = do
     h <- newIORef Nothing
