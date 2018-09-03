@@ -19,6 +19,7 @@ module Cassandra.Schema
     ) where
 
 import Cassandra
+import Cassandra.Settings
 import Control.Applicative
 import Control.Error
 import Control.Monad
@@ -47,6 +48,7 @@ import System.Logger (Logger, Level (..), log, msg, val, field)
 
 import qualified Data.Text.Lazy as LT
 import qualified System.Logger.Class as Log
+import qualified Data.List.NonEmpty as NonEmpty
 
 data Migration = Migration
     { migVersion :: Int32
@@ -139,14 +141,19 @@ useKeyspace (Keyspace k) = do
     prms = QueryParams One False () Nothing Nothing Nothing
     cql  = QueryString $ "use \"" <> fromStrict k <> "\""
 
+
 migrateSchema :: Logger -> MigrationOpts -> [Migration] -> IO ()
 migrateSchema l o ms = do
+    hosts <- initialContactsDNS $ pack (migHost o)
     p <- Database.CQL.IO.init l $
-            setContacts (migHost o) []
+            setContacts (NonEmpty.head hosts) (NonEmpty.tail hosts)
           . setPortNumber (fromIntegral $ migPort o)
           . setMaxConnections 1
           . setPoolStripes 1
           . setPolicy migrationPolicy
+          . setConnectTimeout 10
+          . setSendTimeout 10
+          . setResponseTimeout 30
           . setProtocolVersion V3
           $ defSettings
     runClient p $ do
