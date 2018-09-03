@@ -192,12 +192,24 @@ migrateSchema l o ms = do
     metaInsert :: QueryString W (Int32, Text, UTCTime) ()
     metaInsert = "insert into meta (id, version, descr, date) values (1,?,?,?)"
 
--- | retrieve local schema version from All nodes
+-- | Retrieve and compare local and peer schema versions.
 -- if they don't match, retry once per second for 10 seconds
 waitForSchemaConsistency :: Client ()
 waitForSchemaConsistency = do
     recovering retry10x handlers (const (void $ systemSchemaVersion))
   where
+    systemSchemaVersion :: Client ()
+    systemSchemaVersion = do
+        local <- systemLocalVersion
+        peers <- systemPeerVersions
+        case local of
+        -- TODO: better error handling. Use 'retryWhileN' or similar instead of throwing errors
+            Nothing -> error $ "Couldn't find system_version in system.local"
+            (Just localVersion) -> do
+                if all (== localVersion) peers
+                    then pure ()
+                    else error "TODO"
+
     retry10x :: RetryPolicy
     retry10x = limitRetries 10 <> constantDelay 1000000
 
@@ -210,8 +222,16 @@ waitForSchemaConsistency = do
                . (field "error" (show e))
         return True
 
-systemSchemaVersion :: Client (Maybe UUID)
-systemSchemaVersion = fmap runIdentity <$> qry
+systemPeerVersions :: Client [UUID]
+systemPeerVersions = fmap runIdentity <$> qry
+  where
+    qry = retry x1 (query cql (params All ()))
+
+    cql :: PrepQuery R () (Identity UUID)
+    cql = "select schema_version from system.peers"
+
+systemLocalVersion :: Client (Maybe UUID)
+systemLocalVersion = fmap runIdentity <$> qry
   where
     qry = retry x1 (query1 cql (params All ()))
 
