@@ -43,4 +43,5 @@ library
       , tinylog              >= 0.7
       , wreq                 >= 0.2
       , uuid
+      , retry
 

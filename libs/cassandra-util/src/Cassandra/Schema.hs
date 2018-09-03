@@ -1,6 +1,7 @@
-{-# LANGUAGE DeriveGeneric     #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RecordWildCards   #-}
+{-# LANGUAGE DeriveGeneric          #-}
+{-# LANGUAGE OverloadedStrings      #-}
+{-# LANGUAGE RecordWildCards        #-}
+{-# LANGUAGE ScopedTypeVariables    #-}
 
 module Cassandra.Schema
     ( Migration           (..)
@@ -19,10 +20,11 @@ module Cassandra.Schema
 
 import Cassandra
 import Control.Applicative
-import Control.Monad.Catch
 import Control.Error
 import Control.Monad
+import Control.Monad.Catch
 import Control.Monad.IO.Class
+import Control.Retry
 import Data.Aeson
 import Data.Int
 import Data.IORef
@@ -41,9 +43,10 @@ import Database.CQL.Protocol (Request (..), Query (..), Response(..), Result (..
 import GHC.Generics hiding (to, from, S, R)
 import Options.Applicative hiding (info)
 import Prelude hiding (log)
-import System.Logger (Logger, Level (..), log, msg)
+import System.Logger (Logger, Level (..), log, msg, val, field)
 
 import qualified Data.Text.Lazy as LT
+import qualified System.Logger.Class as Log
 
 data Migration = Migration
     { migVersion :: Int32
@@ -163,8 +166,9 @@ migrateSchema l o ms = do
             migAction
             now <- liftIO getCurrentTime
             write metaInsert (params All (migVersion, migText, now))
-            info "waiting for schema version consistency across peers..."
+            info "Waiting for schema version consistency across peers..."
             waitForSchemaConsistency
+            info "... done waiting."
   where
     newer v = dropWhile (maybe (const False) (>=) v . migVersion)
             . sortBy (\x y -> migVersion x `compare` migVersion y)
@@ -181,15 +185,23 @@ migrateSchema l o ms = do
     metaInsert :: QueryString W (Int32, Text, UTCTime) ()
     metaInsert = "insert into meta (id, version, descr, date) values (1,?,?,?)"
 
+-- | retrieve local schema version from All nodes
+-- if they don't match, retry once per second for 10 seconds
 waitForSchemaConsistency :: Client ()
 waitForSchemaConsistency = do
-    -- select schema_version from system.local from all nodes
-    _v <- systemSchemaVersion
-    undefined
-    -- TODO
-    -- compare and wait until they are the same or timeout
-    -- catch
-    -- (errorMsg "schema_version" "system.local")
+    recovering retry10x handlers (const (void $ systemSchemaVersion))
+  where
+    retry10x :: RetryPolicy
+    retry10x = limitRetries 10 <> constantDelay 1000000
+
+    handlers :: [RetryStatus -> Handler Client Bool]
+    handlers = skipAsyncExceptions ++ [logError]
+
+    logError :: b -> Handler Client Bool
+    logError = const $ Handler $ \(e :: SomeException) -> do
+        Log.warn $ msg (val "Exception while waiting for schema version consistency, retrying...")
+               . (field "error" (show e))
+        return True
 
 systemSchemaVersion :: Client (Maybe UUID)
 systemSchemaVersion = fmap runIdentity <$> qry
